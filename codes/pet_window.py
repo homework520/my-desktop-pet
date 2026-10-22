@@ -284,7 +284,7 @@ class PetWindow(QWidget):
         self.input_box = QLineEdit()
 
         self.input_box.setPlaceholderText(
-            "和姐姐说点什么吧……"
+            self.api_client.persona.persona.input_placeholder
         )
 
         self.input_box.setMinimumHeight(42)
@@ -511,13 +511,9 @@ class PetWindow(QWidget):
         if not PET_CLICK_REACTION_ENABLED:
             return
 
-        reactions = [
-            "嗯？是在叫我吗？",
-            "怎么啦？姐姐在这里哦。",
-            "摸摸我吗？",
-            "今天也要好好照顾自己哦。",
-            "我一直都有在看着你呢。",
-        ]
+        reactions = self.api_client.persona.persona.click_reactions
+        if not reactions:
+            return
 
         self.dialogue.play(
             random.choice(reactions)
@@ -529,8 +525,7 @@ class PetWindow(QWidget):
         self._wake_up()
 
         self.dialogue.play(
-            "双击我做什么呀？\n"
-            "难道是想和姐姐多待一会儿？"
+            self.api_client.persona.persona.double_click_line
         )
 
     # ========================================================
@@ -561,7 +556,9 @@ class PetWindow(QWidget):
         self._set_pet_image(SLEEPING_IMAGE)
 
         # 用气泡直接显示，不走 dialogue
-        self.speech.setText("呼……先睡一会儿……")
+        self.speech.setText(
+            self.api_client.persona.persona.sleep_line
+        )
         self.speech.setVisible(True)
 
 
@@ -609,12 +606,10 @@ class PetWindow(QWidget):
             self._reset_idle_timer()
             return
 
-        idle_messages = [
-            "刚才好安静呀，你在忙什么呢？",
-            "已经过了一会儿啦，记得稍微休息一下哦。",
-            "偷偷看你一眼……还好吗？",
-            "如果累了的话，可以稍微放松一下。",
-        ]
+        idle_messages = self.api_client.persona.persona.idle_messages
+        if not idle_messages:
+            self._reset_idle_timer()
+            return
 
         self.dialogue.play(
             random.choice(idle_messages)
@@ -655,13 +650,13 @@ class PetWindow(QWidget):
         # ----------------------------------------------------
 
         greet_action = QAction(
-            "让姐姐说句话",
+            "主动说一句话",
             self,
         )
 
         greet_action.triggered.connect(
             lambda: self.dialogue.play(
-                "今天也辛苦啦，有什么想和姐姐聊聊的吗？"
+                self.api_client.persona.persona.greet_line
             )
         )
 
@@ -685,6 +680,32 @@ class PetWindow(QWidget):
         menu.addAction(
             clear_action
         )
+
+        # ----------------------------------------------------
+        # 人设
+        # ----------------------------------------------------
+
+        scene_menu = menu.addMenu("切换场景")
+
+        for scene_id, title in self.api_client.persona.list_scenes():
+            scene_action = QAction(title, self)
+            scene_action.setCheckable(True)
+            scene_action.setChecked(
+                scene_id == self.api_client.persona.active_scene
+            )
+            scene_action.triggered.connect(
+                lambda checked=False, sid=scene_id: self.switch_scene(sid)
+            )
+            scene_menu.addAction(scene_action)
+
+        reload_action = QAction(
+            "重载人设",
+            self,
+        )
+        reload_action.triggered.connect(
+            self.reload_persona
+        )
+        menu.addAction(reload_action)
 
         menu.addSeparator()
 
@@ -800,6 +821,23 @@ class PetWindow(QWidget):
             self._reset_idle_timer()
         else:
             self.idle_timer.stop()
+
+    def switch_scene(self, scene_id):
+
+        try:
+            self.api_client.set_scene(scene_id)
+        except Exception as e:
+            print("切换场景失败:", e)
+
+    def reload_persona(self):
+
+        try:
+            self.api_client.reload_persona()
+            self.input_box.setPlaceholderText(
+                self.api_client.persona.persona.input_placeholder
+            )
+        except Exception as e:
+            print("重载人设失败:", e)
 
     # ========================================================
     # 拖动

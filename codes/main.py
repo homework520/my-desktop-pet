@@ -2,9 +2,10 @@
 
 import sys
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from api_client import DeepSeekClient
+from persona import PersonaStore
 from pet_window import PetWindow
 
 
@@ -12,27 +13,32 @@ def main():
 
     app = QApplication(sys.argv)
 
-    app.setApplicationName(
-        "温柔姐姐桌宠"
-    )
-
     app.setQuitOnLastWindowClosed(
         False
     )
 
     # --------------------------------------------------------
-    # 创建 AI
+    # 创建人设与 AI
     # --------------------------------------------------------
 
     try:
 
-        api_client = DeepSeekClient()
+        persona = PersonaStore()
+        api_client = DeepSeekClient(persona)
 
     except Exception as e:
 
         print(e)
-
+        QMessageBox.critical(
+            None,
+            "启动失败",
+            str(e),
+        )
         return 1
+
+    app.setApplicationName(
+        persona.persona.app_name
+    )
 
     # --------------------------------------------------------
     # 创建桌宠

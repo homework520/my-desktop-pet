@@ -6,9 +6,9 @@ from config import (
     API_KEY,
     API_BASE_URL,
     MODEL_NAME,
-    SYSTEM_PROMPT,
     MAX_HISTORY,
 )
+from persona import PersonaStore
 
 
 class DeepSeekClient:
@@ -19,21 +19,22 @@ class DeepSeekClient:
     桌宠的 UI、动画和对话系统无需修改。
     """
 
-    def __init__(self):
+    def __init__(self, persona: PersonaStore | None = None):
         if not API_KEY or API_KEY.startswith("sk-xxxx"):
             raise ValueError(
-                "请先在 codes/config.py 中填写 DeepSeek API Key。"
+                "请先复制 .env.example 为 .env，并填写 DEEPSEEK_API_KEY。"
             )
 
         self.client = OpenAI(
             api_key=API_KEY,
             base_url=API_BASE_URL,
         )
+        self.persona = persona or PersonaStore()
 
         self.messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT,
+                "content": self.persona.system_prompt(),
             }
         ]
 
@@ -46,6 +47,8 @@ class DeepSeekClient:
 
         if not user_message:
             return ""
+
+        self._refresh_system_prompt()
 
         self.messages.append(
             {
@@ -81,15 +84,37 @@ class DeepSeekClient:
 
     def clear_history(self):
         """
-        清空聊天记忆。
+        清空聊天记忆，但保留当前人设。
         """
 
+        self._refresh_system_prompt()
         self.messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT,
+                "content": self.persona.system_prompt(),
             }
         ]
+
+    def reload_persona(self):
+        self.persona.reload(keep_scene_override=False)
+        self._refresh_system_prompt()
+
+    def set_scene(self, scene_id: str):
+        self.persona.reload(keep_scene_override=True)
+        self.persona.set_scene(scene_id)
+        self._refresh_system_prompt()
+
+    def _refresh_system_prompt(self):
+        """每次对话前重读人设文件，改完 yaml 不必重启。"""
+        self.persona.reload(keep_scene_override=True)
+        system_message = {
+            "role": "system",
+            "content": self.persona.system_prompt(),
+        }
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0] = system_message
+        else:
+            self.messages.insert(0, system_message)
 
     def _trim_history(self):
         """

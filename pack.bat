@@ -30,6 +30,7 @@ echo 开始打包...
     --windowed ^
     --name "温柔姐姐桌宠" ^
     --add-data "pictures;./pictures" ^
+    --add-data "persona;./persona" ^
     "codes/main.py"
 
 if errorlevel 1 (
@@ -48,6 +49,8 @@ echo ========================================
 echo.
 echo 输出目录：
 echo dist\温柔姐姐桌宠\
+echo.
+echo 请把 .env 放到该目录。若要改人设，把 persona 文件夹也拷过去。
 echo.
 
 pause

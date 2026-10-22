@@ -1,56 +1,73 @@
 # codes/config.py
+import os
+import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 # ============================================================
 # 项目路径
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+def _project_dir() -> Path:
+    """开发时是仓库根目录；打包后是 exe 所在目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
-PICTURE_DIR = BASE_DIR / "pictures" / "finally"
+
+def _resource_dir() -> Path:
+    """图片等随程序分发的资源目录。"""
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        internal = exe_dir / "_internal"
+        if (internal / "pictures").exists():
+            return internal
+        return exe_dir
+    return _project_dir()
+
+
+def _persona_dir() -> Path:
+    """
+    人设目录。
+
+    打包后优先读 exe 同级的 persona，方便改完立刻生效；
+    没有的话再回退到程序内置的那一份。
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        user_persona = exe_dir / "persona"
+        if user_persona.exists():
+            return user_persona
+        internal = exe_dir / "_internal" / "persona"
+        if internal.exists():
+            return internal
+        return user_persona
+    return _project_dir() / "persona"
+
+
+BASE_DIR = _project_dir()
+RESOURCE_DIR = _resource_dir()
+PERSONA_DIR = _persona_dir()
+
+# 密钥只从环境变量 / .env 读取，不要写进源码
+load_dotenv(BASE_DIR / ".env")
+
+PICTURE_DIR = RESOURCE_DIR / "pictures" / "finally"
 
 STANDBY_IMAGE = PICTURE_DIR / "standby.png"
 SPEAKING_IMAGE = PICTURE_DIR / "speaking.png"
+SLEEPING_IMAGE = PICTURE_DIR / "sleeping.png"
 
 
 # ============================================================
-# DeepSeek 配置
+# DeepSeek 配置（密钥放在项目根目录的 .env）
 # ============================================================
 
-# api输入口
-API_KEY = "sk-747f2f902e514fe181b7862fd6b7669a"
-
-API_BASE_URL = "https://api.deepseek.com"
-
-MODEL_NAME = "deepseek-chat"
-
-
-# ============================================================
-# 角色设定
-# ============================================================
-
-CHARACTER_NAME = "姐姐"
-
-SYSTEM_PROMPT = """
-你是一名温柔、知性、成熟、体贴的姐姐系桌面宠物。
-
-你的角色特点：
-1. 温柔，但不要过分肉麻。
-2. 知性、有耐心，能够认真倾听。
-3. 偶尔会用轻松自然的方式关心用户。
-4. 可以适当调侃用户，但不能刻薄。
-5. 像现实中关系不错的温柔大姐姐一样说话。
-6. 不要频繁使用夸张的网络用语。
-7. 不要每句话都叫用户“亲爱的”。
-8. 回复自然、简洁，适合桌面宠物气泡显示。
-9. 不要输出 Markdown。
-10. 不要输出“AI：”“姐姐：”之类的前缀。
-11. 如果一个回答比较长，请主动分成2~4句，每句独立一行。
-12. 默认使用中文。
-
-你是一个长期陪伴用户的桌面宠物，因此要保持前后对话的连贯性。
-"""
+API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+API_BASE_URL = os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com").strip()
+MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
 
 
 # ============================================================
@@ -106,6 +123,5 @@ PET_CLICK_REACTION_ENABLED = True
 # 最多保存多少轮聊天
 MAX_HISTORY = 20
 
-# ===== 睡眠相关 =====
-SLEEPING_IMAGE = "pictures/finally/sleeping.png"
-SLEEP_AFTER_SECONDS = 180   # 3 分钟没有点击就睡觉
+# 多久没有互动后睡觉
+SLEEP_AFTER_SECONDS = 180
