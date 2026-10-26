@@ -45,6 +45,45 @@ def _relationship_lines(value) -> list[str]:
     return lines
 
 
+def _world_lines(value) -> list[str]:
+    """
+    世界观可以写成标签列表，也可以按地点分组：
+
+    world:
+      - 格局：……
+      - 陇平：西陲边郡
+
+    world:
+      overview:
+        - 格局：……
+      places:
+        陇平:
+          - 西陲边郡
+      geography:
+        - 陇平在西，京城在东
+    """
+    if not value:
+        return []
+    if not isinstance(value, dict):
+        return _as_list(value)
+
+    lines = []
+    for key, detail in value.items():
+        if key in {"overview", "era", "notes", "geography", "relations"}:
+            lines.extend(_as_list(detail))
+            continue
+        if key == "places" and isinstance(detail, dict):
+            lines.extend(_relationship_lines(detail))
+            continue
+        if isinstance(detail, (list, tuple, dict)):
+            body = "；".join(_as_list(detail) if not isinstance(detail, dict) else _relationship_lines(detail))
+            lines.append(f"{key}：{body}" if body else str(key))
+        else:
+            text = _as_str(detail)
+            lines.append(f"{key}：{text}" if text else str(key))
+    return lines
+
+
 def _read_memory_file(path: Path) -> str:
     if not path.exists():
         return ""
@@ -67,6 +106,7 @@ class Persona:
     core_obsessions: list[str] = field(default_factory=list)
     speech_style: list[str] = field(default_factory=list)
     relationships: list[str] = field(default_factory=list)
+    world: list[str] = field(default_factory=list)
     scenes: dict = field(default_factory=dict)
     current_scene: str = "desktop"
     rules: list[str] = field(default_factory=list)
@@ -101,7 +141,7 @@ class Persona:
     def build_system_prompt(self, scene_id: str | None = None) -> str:
         """
         模块化拼接：
-        A 基础人设 + B 当前场景 + 规则 + C 长期记忆
+        A 基础人设 + 世界观 + B 当前场景 + 规则 + C 长期记忆
         """
         active_scene = scene_id or self.current_scene
         parts = [
@@ -112,6 +152,7 @@ class Persona:
             _section("模块A：核心执念", self.core_obsessions),
             _section("模块A：说话风格", self.speech_style),
             _section("模块A：已知人物关系", self.relationships),
+            _section("世界观：地理与背景（只在提到时自然用上，不要上课）", self.world),
             _section(
                 f"模块B：当前场景（{self.scene_title(active_scene)}）",
                 self.scene_tags(active_scene),
@@ -204,6 +245,7 @@ class PersonaStore:
             ),
             speech_style=_as_list(data.get("speech_style")),
             relationships=_relationship_lines(data.get("relationships") or {}),
+            world=_world_lines(data.get("world") or data.get("worldview")),
             scenes=scenes,
             current_scene=_as_str(data.get("current_scene"), "desktop"),
             rules=_as_list(data.get("rules")),

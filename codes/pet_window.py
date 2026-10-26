@@ -116,10 +116,10 @@ class SpeechBubble(QLabel):
         self.setWordWrap(True)
 
         self.setAlignment(
-            Qt.AlignLeft | Qt.AlignVCenter
+            Qt.AlignLeft | Qt.AlignTop
         )
 
-        self.setMinimumHeight(100)
+        self.setMinimumHeight(60)
 
         self.setStyleSheet(
             """
@@ -163,6 +163,11 @@ class PetWindow(QWidget):
 
         self.idle_enabled = IDLE_CHAT_ENABLED
 
+        self._greeting_pending = False
+        self._greeting_cancelled = False
+        self._did_startup_greeting = False
+        self._greeting_worker = None
+
         self._setup_window()
         self._setup_ui()
         self._setup_dialogue()
@@ -171,7 +176,15 @@ class PetWindow(QWidget):
 
         self._reset_idle_timer()
 
+    def showEvent(self, event):
 
+        super().showEvent(event)
+
+        if self._did_startup_greeting:
+            return
+
+        self._did_startup_greeting = True
+        QTimer.singleShot(200, self._start_startup_greeting)
 
     # ========================================================
     # Window
@@ -219,7 +232,7 @@ class PetWindow(QWidget):
         self.speech = SpeechBubble(self)
 
         self.speech.setMinimumHeight(60)
-        self.speech.setMaximumHeight(120)
+        self.speech.setMaximumHeight(240)
 
         self.speech.clicked.connect(
             self.dialogue_click
@@ -444,6 +457,8 @@ class PetWindow(QWidget):
 
     def send_message(self):
 
+        self._cancel_startup_greeting()
+
         message = (
             self.input_box.text()
             .strip()
@@ -505,6 +520,7 @@ class PetWindow(QWidget):
 
     def pet_clicked(self):
 
+        self._cancel_startup_greeting()
         self._reset_idle_timer()
         self._wake_up()
 
@@ -521,6 +537,7 @@ class PetWindow(QWidget):
 
     def pet_double_clicked(self):
 
+        self._cancel_startup_greeting()
         self._reset_idle_timer()
         self._wake_up()
 
@@ -655,9 +672,7 @@ class PetWindow(QWidget):
         )
 
         greet_action.triggered.connect(
-            lambda: self.dialogue.play(
-                self.api_client.persona.persona.greet_line
-            )
+            self._play_menu_greet
         )
 
         menu.addAction(
@@ -839,6 +854,63 @@ class PetWindow(QWidget):
         except Exception as e:
             print("重载人设失败:", e)
 
+    def _play_menu_greet(self):
+
+        self._cancel_startup_greeting()
+        self.dialogue.play(
+            self.api_client.persona.persona.greet_line
+        )
+
+    # ========================================================
+    # 开机问候
+    # ========================================================
+
+    def _start_startup_greeting(self):
+
+        if self._greeting_cancelled:
+            return
+
+        self._greeting_pending = True
+        self._greeting_worker = GreetingWorker(self.api_client)
+        self._greeting_worker.succeeded.connect(self._greeting_finished)
+        self._greeting_worker.failed.connect(self._greeting_failed)
+        self._greeting_worker.start()
+
+    def _cancel_startup_greeting(self):
+
+        if self._greeting_pending:
+            self._greeting_cancelled = True
+            self._greeting_pending = False
+
+    def _greeting_finished(self, prompt, answer):
+
+        self._play_startup_greeting(prompt, answer)
+
+    def _greeting_failed(self, prompt, error):
+
+        print("开机问候失败:", error)
+        self._play_startup_greeting(prompt, "")
+
+    def _play_startup_greeting(self, prompt, answer):
+
+        if self._greeting_cancelled:
+            return
+
+        self._greeting_pending = False
+
+        text = (answer or "").strip() or (
+            self.api_client.persona.persona.greet_line or ""
+        ).strip()
+
+        if not text:
+            return
+
+        if not self.api_client.try_commit_exchange(prompt, text):
+            return
+
+        self.dialogue.play(text)
+        self._reset_idle_timer()
+
     # ========================================================
     # 拖动
     # ========================================================
@@ -930,6 +1002,26 @@ class PetWindow(QWidget):
 
 
 from PySide6.QtCore import QThread, Signal
+
+
+class GreetingWorker(QThread):
+
+    succeeded = Signal(str, str)
+    failed = Signal(str, str)
+
+    def __init__(self, api_client):
+        super().__init__()
+        self.api_client = api_client
+
+    def run(self):
+
+        prompt = self.api_client.build_startup_greeting_prompt()
+
+        try:
+            prompt, answer = self.api_client.generate_startup_greeting()
+            self.succeeded.emit(prompt, answer)
+        except Exception as e:
+            self.failed.emit(prompt, str(e))
 
 
 class ChatWorker(QThread):

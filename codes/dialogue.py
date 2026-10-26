@@ -63,12 +63,13 @@ class DialoguePlayer(QObject):
     # --------------------------------------------------------
 
     def play(self, text: str):
-        sentences = self._split_sentences(text)
+        text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
 
-        if not sentences:
+        if not text:
             return
 
-        self.sentences = sentences
+        # 整段放进同一个气泡，不再按句/按行翻页
+        self.sentences = [text]
         self.current_index = 0
 
         self._start_current_sentence()
@@ -166,12 +167,8 @@ class DialoguePlayer(QObject):
 
         self.unlock_timer.start(self.next_lock_ms)
 
-        # 最后一句等待3秒，
-        # 其它句子等待2秒
-        if self.current_index >= len(self.sentences) - 1:
-            self.stay_timer.start(self.last_stay_ms)
-        else:
-            self.stay_timer.start(self.stay_ms)
+        extra = min(10000, max(0, (len(self.current_text) - 40) * 40))
+        self.stay_timer.start(self.last_stay_ms + extra)
 
     # --------------------------------------------------------
     # 解锁下一句
@@ -206,38 +203,3 @@ class DialoguePlayer(QObject):
         self.speaking_changed.emit(False)
 
         self.dialogue_finished.emit()
-
-    # --------------------------------------------------------
-    # 分句
-    # --------------------------------------------------------
-
-    @staticmethod
-    def _split_sentences(text: str):
-
-        text = text.replace("\r\n", "\n")
-        text = text.replace("\r", "\n")
-
-        lines = []
-
-        for line in text.split("\n"):
-            line = line.strip()
-
-            if line:
-                lines.append(line)
-
-        # 如果模型没有换行，则按照中文标点进行简单切句
-        if len(lines) == 1:
-            import re
-
-            result = re.split(
-                r"(?<=[。！？!?；;])",
-                lines[0],
-            )
-
-            lines = [
-                x.strip()
-                for x in result
-                if x.strip()
-            ]
-
-        return lines
