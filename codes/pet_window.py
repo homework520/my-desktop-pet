@@ -33,7 +33,10 @@ from config import (
     STANDBY_IMAGE,
     SPEAKING_IMAGE,
     SLEEPING_IMAGE,          # 👈 新增
+    FLOATING_IMAGE,
     SLEEP_AFTER_SECONDS,     # 👈 新增
+    SLEEP_BUBBLE_MS,
+    STANDBY_MODE_IMAGE_DIR,
     IMAGE_WIDTH,
     IMAGE_HEIGHT,
     ALWAYS_ON_TOP,
@@ -90,10 +93,31 @@ class PetImage(QLabel):
 
     def mousePressEvent(self, event):
 
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
+        window = self.window()
+        if event.button() == Qt.LeftButton and hasattr(window, "_on_drag_press"):
+            window._on_drag_press(event)
 
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+
+        window = self.window()
+        if hasattr(window, "_on_drag_move"):
+            window._on_drag_move(event)
+
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+
+        window = self.window()
+        dragged = False
+        if hasattr(window, "_on_drag_release"):
+            dragged = window._on_drag_release(event)
+
+        if event.button() == Qt.LeftButton and not dragged:
+            self.clicked.emit()
+
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
 
@@ -155,9 +179,15 @@ class PetWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.is_sleeping = False
+        self.is_dragging = False
         self.api_client = api_client
+        self._sleep_bubble = False
+        self._standby_mode = False
+        self._standby_image = None
 
         self.drag_position = QPoint()
+        self._drag_press_pos = QPoint()
+        self._drag_pressed = False
 
         self.always_on_top = ALWAYS_ON_TOP
 
@@ -290,8 +320,13 @@ class PetWindow(QWidget):
         # 输入区域
         # ----------------------------------------------------
 
-        input_layout = QHBoxLayout()
+        self.input_container = QWidget()
 
+        input_layout = QHBoxLayout(
+            self.input_container
+        )
+
+        input_layout.setContentsMargins(0, 0, 0, 0)
         input_layout.setSpacing(6)
 
         self.input_box = QLineEdit()
@@ -363,8 +398,9 @@ class PetWindow(QWidget):
             self.send_button
         )
 
-        main_layout.addLayout(
-            input_layout,0
+        main_layout.addWidget(
+            self.input_container,
+            0,
         )
 
     # ========================================================
@@ -395,11 +431,17 @@ class PetWindow(QWidget):
 
     def dialogue_click(self):
 
+        self._wake_up()
         self.dialogue.click()
 
         self._reset_idle_timer()
 
     def _set_speech_text(self, text):
+
+        # 正式对话开始后，睡眠台词让位给对话气泡
+        if text and self._sleep_bubble:
+            self._sleep_bubble = False
+            self.sleep_bubble_timer.stop()
 
         self.speech.setText(text)
 
@@ -408,6 +450,9 @@ class PetWindow(QWidget):
         )
 
     def _set_speaking(self, speaking):
+
+        if self.is_dragging or self._standby_mode:
+            return
 
         if speaking:
             self._set_pet_image(
@@ -424,13 +469,23 @@ class PetWindow(QWidget):
 
         self.speech.hide()
 
-        self._set_pet_image(
-            STANDBY_IMAGE
-        )
+        if not self.is_dragging:
+            self._restore_pose_image()
 
     # ========================================================
     # 图片
     # ========================================================
+
+    def _restore_pose_image(self):
+
+        if self._standby_mode and self._standby_image:
+            self._set_pet_image(self._standby_image)
+        elif self.is_sleeping:
+            self._set_pet_image(SLEEPING_IMAGE)
+        elif self.dialogue.is_typing:
+            self._set_pet_image(SPEAKING_IMAGE)
+        else:
+            self._set_pet_image(STANDBY_IMAGE)
 
     def _set_pet_image(self, path):
 
@@ -457,6 +512,9 @@ class PetWindow(QWidget):
 
     def send_message(self):
 
+        if self._standby_mode:
+            return
+
         self._cancel_startup_greeting()
 
         message = (
@@ -469,6 +527,8 @@ class PetWindow(QWidget):
 
         self.input_box.clear()
 
+        # 睡觉时也能直接发消息：先唤醒，避免睡着却切到说话图
+        self._wake_up()
         self._reset_idle_timer()
 
         # 禁止重复发送
@@ -498,6 +558,10 @@ class PetWindow(QWidget):
         self.input_box.setEnabled(True)
         self.send_button.setEnabled(True)
 
+        # 待机模式下不显示对话内容
+        if self._standby_mode:
+            return
+
         if answer:
             self.dialogue.play(answer)
 
@@ -507,6 +571,10 @@ class PetWindow(QWidget):
 
         self.input_box.setEnabled(True)
         self.send_button.setEnabled(True)
+
+        if self._standby_mode:
+            print("API Error（待机模式，已忽略）:", error)
+            return
 
         self.dialogue.play(
             "抱歉呀，刚才和服务器的连接好像出了点问题。",
@@ -554,31 +622,63 @@ class PetWindow(QWidget):
         self.sleep_timer.setSingleShot(True)
         self.sleep_timer.timeout.connect(self._go_to_sleep)
 
+        self.sleep_bubble_timer = QTimer(self)
+        self.sleep_bubble_timer.setSingleShot(True)
+        self.sleep_bubble_timer.timeout.connect(self._clear_sleep_bubble)
+
     def _reset_sleep_timer(self):
         """每次和桌宠互动时，重置睡眠倒计时"""
-        if self.is_sleeping:
-            return  # 已经睡了，不重置
+        if self.is_sleeping or self._standby_mode:
+            return  # 已经睡了或处于待机模式，不重置
         self.sleep_timer.start(SLEEP_AFTER_SECONDS * 1000)
 
     def _go_to_sleep(self):
         """进入睡眠状态"""
-        if self.is_sleeping:
+        if self.is_sleeping or self._standby_mode:
             return
+
+        # 正在说话、等回复或等开机问候时先不睡，等下一轮倒计时
+        worker = getattr(self, "worker", None)
+        if (
+            self._greeting_pending
+            or self.dialogue.is_active
+            or (worker is not None and worker.isRunning())
+        ):
+            self._reset_sleep_timer()
+            return
+
         self.is_sleeping = True
 
         # 停止自动聊天，避免睡着还说话
         self.idle_timer.stop()
 
-        # 切睡眠图
-        self._set_pet_image(SLEEPING_IMAGE)
+        if not self.is_dragging:
+            self._set_pet_image(SLEEPING_IMAGE)
 
-        # 用气泡直接显示，不走 dialogue
-        self.speech.setText(
-            self.api_client.persona.persona.sleep_line
-        )
-        self.speech.setVisible(True)
+        # 用气泡直接显示，不走 dialogue；过一会儿自动收起
+        sleep_line = self.api_client.persona.persona.sleep_line
+        if sleep_line:
+            self.speech.setText(sleep_line)
+            self.speech.setVisible(True)
+            self._sleep_bubble = True
+            self.sleep_bubble_timer.start(SLEEP_BUBBLE_MS)
 
+    def _clear_sleep_bubble(self):
+        """睡眠台词显示一会儿后自动收起，避免一直挂在桌上。"""
+        if not self._sleep_bubble:
+            return
 
+        if not self.is_sleeping:
+            self._sleep_bubble = False
+            return
+
+        if self.dialogue.is_typing:
+            self.sleep_bubble_timer.start(SLEEP_BUBBLE_MS)
+            return
+
+        self._sleep_bubble = False
+        self.speech.clear()
+        self.speech.hide()
 
     def _wake_up(self):
         """从睡眠中唤醒"""
@@ -586,8 +686,14 @@ class PetWindow(QWidget):
             return
         self.is_sleeping = False
 
+        self.sleep_bubble_timer.stop()
+        if self._sleep_bubble:
+            self._sleep_bubble = False
+            self.speech.clear()
+            self.speech.hide()
+
         # 切回待机图
-        self._set_pet_image(STANDBY_IMAGE)
+        self._restore_pose_image()
 
         # 重新开始自动聊天和睡眠计时
         self._reset_idle_timer()
@@ -633,6 +739,90 @@ class PetWindow(QWidget):
         )
 
         self._reset_idle_timer()
+
+    # ========================================================
+    # 待机模式
+    # ========================================================
+
+    def _pick_standby_image(self):
+
+        suffixes = {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".bmp",
+            ".gif",
+        }
+
+        try:
+            candidates = [
+                path
+                for path in STANDBY_MODE_IMAGE_DIR.iterdir()
+                if path.is_file() and path.suffix.lower() in suffixes
+            ]
+        except OSError as e:
+            print("待机模式图片目录读取失败:", e)
+            candidates = []
+
+        if not candidates:
+            print(
+                "待机模式没有可用图片，使用默认立绘：",
+                STANDBY_MODE_IMAGE_DIR,
+            )
+            return STANDBY_IMAGE
+
+        return random.choice(candidates)
+
+    def _enter_standby_mode(self):
+
+        if self._standby_mode:
+            return
+
+        self._standby_mode = True
+        self._cancel_startup_greeting()
+
+        # 待机模式不睡觉，保持随机立绘
+        self.sleep_timer.stop()
+        self.sleep_bubble_timer.stop()
+        self._sleep_bubble = False
+        self.is_sleeping = False
+
+        self._standby_image = self._pick_standby_image()
+        self.dialogue.stop()
+
+        self._set_pet_image(self._standby_image)
+
+        # 关闭对话入口
+        self.input_container.hide()
+        self.input_box.setEnabled(False)
+        self.send_button.setEnabled(False)
+
+        # 主动说话仍然保留
+        self._reset_idle_timer()
+
+    def _exit_standby_mode(self):
+
+        if not self._standby_mode:
+            return
+
+        self._standby_mode = False
+        self._standby_image = None
+
+        self.input_container.show()
+        self.input_box.setEnabled(True)
+        self.send_button.setEnabled(True)
+        self.input_box.setFocus()
+
+        self._restore_pose_image()
+        self._reset_idle_timer()
+
+    def toggle_standby_mode(self, _checked=False):
+
+        if self._standby_mode:
+            self._exit_standby_mode()
+        else:
+            self._enter_standby_mode()
 
     # ========================================================
     # 右键菜单
@@ -702,11 +892,23 @@ class PetWindow(QWidget):
 
         scene_menu = menu.addMenu("切换场景")
 
+        auto_action = QAction("自动（按时间）", self)
+        auto_action.setCheckable(True)
+        auto_action.setChecked(
+            self.api_client.persona.is_auto_scene
+        )
+        auto_action.triggered.connect(
+            lambda checked=False: self.switch_auto_scene()
+        )
+        scene_menu.addAction(auto_action)
+        scene_menu.addSeparator()
+
         for scene_id, title in self.api_client.persona.list_scenes():
             scene_action = QAction(title, self)
             scene_action.setCheckable(True)
             scene_action.setChecked(
-                scene_id == self.api_client.persona.active_scene
+                not self.api_client.persona.is_auto_scene
+                and scene_id == self.api_client.persona.active_scene
             )
             scene_action.triggered.connect(
                 lambda checked=False, sid=scene_id: self.switch_scene(sid)
@@ -766,6 +968,28 @@ class PetWindow(QWidget):
 
         menu.addAction(
             idle_action
+        )
+
+        # ----------------------------------------------------
+        # 待机模式
+        # ----------------------------------------------------
+
+        standby_action = QAction(
+            "待机模式",
+            self,
+        )
+
+        standby_action.setCheckable(True)
+        standby_action.setChecked(
+            self._standby_mode
+        )
+
+        standby_action.triggered.connect(
+            self.toggle_standby_mode
+        )
+
+        menu.addAction(
+            standby_action
         )
 
         menu.addSeparator()
@@ -844,6 +1068,13 @@ class PetWindow(QWidget):
         except Exception as e:
             print("切换场景失败:", e)
 
+    def switch_auto_scene(self):
+
+        try:
+            self.api_client.set_auto_scene()
+        except Exception as e:
+            print("切换自动场景失败:", e)
+
     def reload_persona(self):
 
         try:
@@ -867,7 +1098,7 @@ class PetWindow(QWidget):
 
     def _start_startup_greeting(self):
 
-        if self._greeting_cancelled:
+        if self._greeting_cancelled or self._standby_mode:
             return
 
         self._greeting_pending = True
@@ -882,18 +1113,18 @@ class PetWindow(QWidget):
             self._greeting_cancelled = True
             self._greeting_pending = False
 
-    def _greeting_finished(self, prompt, answer):
+    def _greeting_finished(self, _prompt, answer):
 
-        self._play_startup_greeting(prompt, answer)
+        self._play_startup_greeting(answer)
 
-    def _greeting_failed(self, prompt, error):
+    def _greeting_failed(self, _prompt, error):
 
         print("开机问候失败:", error)
-        self._play_startup_greeting(prompt, "")
+        self._play_startup_greeting("")
 
-    def _play_startup_greeting(self, prompt, answer):
+    def _play_startup_greeting(self, answer):
 
-        if self._greeting_cancelled:
+        if self._greeting_cancelled or self._standby_mode:
             return
 
         self._greeting_pending = False
@@ -905,7 +1136,8 @@ class PetWindow(QWidget):
         if not text:
             return
 
-        if not self.api_client.try_commit_exchange(prompt, text):
+        # 只记录“已经问候过”，场景指令本身不进聊天历史
+        if not self.api_client.commit_startup_greeting(text):
             return
 
         self.dialogue.play(text)
@@ -915,36 +1147,77 @@ class PetWindow(QWidget):
     # 拖动
     # ========================================================
 
+    def _on_drag_press(self, event):
+
+        if event.button() != Qt.LeftButton:
+            return
+
+        self.drag_position = (
+            event.globalPosition().toPoint()
+            - self.frameGeometry().topLeft()
+        )
+        self._drag_press_pos = event.globalPosition().toPoint()
+        self._drag_pressed = True
+        self.is_dragging = False
+
+    def _on_drag_move(self, event):
+
+        if not self._drag_pressed or not (event.buttons() & Qt.LeftButton):
+            return False
+
+        current = event.globalPosition().toPoint()
+        if not self.is_dragging:
+            delta = current - self._drag_press_pos
+            if delta.manhattanLength() < 8:
+                return False
+            self.is_dragging = True
+            self._cancel_startup_greeting()
+            self._wake_up()
+            self._set_pet_image(FLOATING_IMAGE)
+
+        self.move(current - self.drag_position)
+        return True
+
+    def _on_drag_release(self, event):
+
+        if event.button() != Qt.LeftButton:
+            return False
+
+        dragged = self.is_dragging
+        self.is_dragging = False
+        self._drag_pressed = False
+        self.drag_position = QPoint()
+        self._drag_press_pos = QPoint()
+
+        if dragged:
+            self._restore_pose_image()
+            self._reset_idle_timer()
+
+        return dragged
+
     def mousePressEvent(self, event):
 
         if event.button() == Qt.LeftButton:
-
-            self.drag_position = (
-                event.globalPosition().toPoint()
-                - self.frameGeometry().topLeft()
-            )
-
+            self._on_drag_press(event)
             event.accept()
-
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
 
-        if (
-            event.buttons()
-            & Qt.LeftButton
-        ):
-
-            self.move(
-                event.globalPosition().toPoint()
-                - self.drag_position
-            )
-
+        if event.buttons() & Qt.LeftButton:
+            self._on_drag_move(event)
             event.accept()
-
         else:
             super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+
+        if event.button() == Qt.LeftButton:
+            self._on_drag_release(event)
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
     # ========================================================
     # 托盘

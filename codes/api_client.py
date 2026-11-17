@@ -10,6 +10,9 @@ from config import (
     API_BASE_URL,
     MODEL_NAME,
     MAX_HISTORY,
+    MAX_TOKENS,
+    GREETING_MAX_TOKENS,
+    FREQUENCY_PENALTY,
 )
 from persona import PersonaStore
 
@@ -71,6 +74,11 @@ class DeepSeekClient:
         )
         self.persona = persona or PersonaStore()
         self._lock = threading.Lock()
+        self._greeted = False
+
+        # 用于 Layer 3 状态注入：上一轮开口的时间、本次运行聊了几轮
+        self._last_user_at: datetime | None = None
+        self._turn_count = 0
 
         self.messages = [
             {
@@ -92,7 +100,8 @@ class DeepSeekClient:
     def generate_startup_greeting(self) -> tuple[str, str]:
         """
         生成开机问候，先不写入历史。
-        返回 (场景指令, 问候语)，由界面决定是否计入聊天。
+        返回 (场景指令, 问候语)；场景指令只用于这一次生成，
+        由界面决定是否把这次问候记为「已经打过招呼」。
         """
         prompt = self.build_startup_greeting_prompt()
 
@@ -110,39 +119,30 @@ class DeepSeekClient:
             model=MODEL_NAME,
             messages=temp_messages,
             temperature=0.8,
-            max_tokens=120,
+            max_tokens=GREETING_MAX_TOKENS,
+            frequency_penalty=FREQUENCY_PENALTY,
             stream=False,
         )
 
         answer = (response.choices[0].message.content or "").strip()
         return prompt, answer
 
-    def try_commit_exchange(self, user_message: str, answer: str) -> bool:
+    def commit_startup_greeting(self, answer: str) -> bool:
         """
-        把一轮对话写入历史。
-        若用户已经先开口，就放弃写入，避免问候插到对话中间。
+        记录“本次运行已经问候过”。
+
+        场景指令只用于生成问候，不写进聊天历史，
+        免得下一轮把它当成用户真正说过的话。
+        若用户已经先开口，就放弃记录，避免问候插到对话中间。
         """
-        user_message = (user_message or "").strip()
         answer = (answer or "").strip()
-        if not user_message or not answer:
+        if not answer:
             return False
 
         with self._lock:
             if self._has_user_messages():
                 return False
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": user_message,
-                }
-            )
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                }
-            )
-            self._trim_history()
+            self._greeted = True
             return True
 
     def chat(self, user_message: str) -> str:
@@ -167,13 +167,28 @@ class DeepSeekClient:
 
             # 控制历史长度，避免长期运行后上下文无限增长
             self._trim_history()
+
+            # Layer 3：状态块贴在历史末尾、紧邻生成位置，
+            # 只用于这一次请求，不写进 messages。
+            state_block = self._build_state_block(user_message)
             request_messages = list(self.messages)
+            if state_block:
+                request_messages.append(
+                    {
+                        "role": "system",
+                        "content": state_block,
+                    }
+                )
+
+            self._last_user_at = datetime.now()
+            self._turn_count += 1
 
         response = self.client.chat.completions.create(
             model=MODEL_NAME,
             messages=request_messages,
             temperature=0.8,
-            max_tokens=500,
+            max_tokens=MAX_TOKENS,
+            frequency_penalty=FREQUENCY_PENALTY,
             stream=False,
         )
 
@@ -197,13 +212,10 @@ class DeepSeekClient:
         """
 
         with self._lock:
+            self.messages = []
+            self._last_user_at = None
+            self._turn_count = 0
             self._refresh_system_prompt()
-            self.messages = [
-                {
-                    "role": "system",
-                    "content": self.persona.system_prompt(),
-                }
-            ]
 
     def reload_persona(self):
         self.persona.reload(keep_scene_override=False)
@@ -214,15 +226,51 @@ class DeepSeekClient:
         self.persona.set_scene(scene_id)
         self._refresh_system_prompt()
 
+    def set_auto_scene(self):
+        """回到按时间自动判断场景。"""
+        self.persona.reload(keep_scene_override=True)
+        self.persona.clear_scene_override()
+        self._refresh_system_prompt()
+
+    def _build_state_block(self, user_message: str) -> str:
+        """拼出这一轮的「此刻」状态块。"""
+        hints = []
+
+        if self._last_user_at is None:
+            hints.append("这是他这次打开后第一次开口。")
+        else:
+            gap = (datetime.now() - self._last_user_at).total_seconds()
+            if gap >= 1800:
+                hints.append(f"他隔了{int(gap // 60)}分钟才回来。")
+            elif gap >= 300:
+                hints.append("他隔了一会儿才开口。")
+
+        if len(user_message) <= 4:
+            hints.append("他这句话很短，别多问。")
+
+        persona = self.persona.persona
+        return persona.build_state_block(
+            time_text=current_time_text(),
+            scene_title=persona.scene_title(self.persona.active_scene),
+            hints=hints,
+        )
+
     def _has_user_messages(self) -> bool:
         return any(item.get("role") == "user" for item in self.messages)
 
     def _refresh_system_prompt(self):
         """每次对话前重读人设文件，改完 yaml 不必重启。"""
         self.persona.reload(keep_scene_override=True)
+        content = self.persona.system_prompt()
+        if self._greeted:
+            # 开机问候不写进 messages，这里补一条状态，避免模型重复打招呼
+            content += (
+                "\n\n（你在本次运行开始时已经向对方打过招呼。"
+                "之后不要再重复问候，等对方先开口。）"
+            )
         system_message = {
             "role": "system",
-            "content": self.persona.system_prompt(),
+            "content": content,
         }
         if self.messages and self.messages[0].get("role") == "system":
             self.messages[0] = system_message

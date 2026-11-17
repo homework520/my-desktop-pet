@@ -56,9 +56,13 @@ load_dotenv(BASE_DIR / ".env")
 
 PICTURE_DIR = RESOURCE_DIR / "pictures" / "finally"
 
+# 待机模式使用的随机立绘目录
+STANDBY_MODE_IMAGE_DIR = RESOURCE_DIR / "pictures" / "see"
+
 STANDBY_IMAGE = PICTURE_DIR / "standby.png"
 SPEAKING_IMAGE = PICTURE_DIR / "speaking.png"
 SLEEPING_IMAGE = PICTURE_DIR / "sleeping.png"
+FLOATING_IMAGE = PICTURE_DIR / "float.png"
 
 
 # ============================================================
@@ -73,6 +77,19 @@ MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
 # ============================================================
 # 对话参数
 # ============================================================
+
+# 单次回复的最大 token 数。约 100~140 汉字，
+# 和气泡的打字机速度对齐，避免说太久用户已经点掉了。
+MAX_TOKENS = 200
+
+# 开机问候的最大 token 数
+GREETING_MAX_TOKENS = 100
+
+# 频率惩罚：压制「这条命是你的」这类口头禅反复循环
+FREQUENCY_PENALTY = 0.4
+
+# 是否按时间自动切换场景。手动切换过场景后，以手动为准。
+SCENE_AUTO_ENABLED = True
 
 # 打字速度：每个字符多少毫秒
 TYPEWRITER_INTERVAL = 45
@@ -98,7 +115,7 @@ FADE_OUT_DURATION_MS = 500
 PET_WIDTH = 360
 PET_HEIGHT = 620
 
-IMAGE_WIDTH = 280
+IMAGE_WIDTH = 360
 IMAGE_HEIGHT = 360
 
 WINDOW_OPACITY = 1.0
@@ -120,8 +137,11 @@ IDLE_CHAT_SECONDS = 60
 # 点击角色时是否产生互动
 PET_CLICK_REACTION_ENABLED = True
 
-# 最多保存多少轮聊天
-MAX_HISTORY = 20
+# 最多保存多少轮聊天。窗口太长，模型会模仿自己前面的腔调，越聊越腻。
+MAX_HISTORY = 14
 
 # 多久没有互动后睡觉
-SLEEP_AFTER_SECONDS = 180
+SLEEP_AFTER_SECONDS = 200
+
+# 睡眠台词显示多久后自动收起
+SLEEP_BUBBLE_MS = 6000

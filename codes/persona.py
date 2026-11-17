@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 
-from config import PERSONA_DIR
+from config import PERSONA_DIR, SCENE_AUTO_ENABLED
 
 
 def _as_str(value, default: str = "") -> str:
@@ -99,8 +100,9 @@ def _read_memory_file(path: Path) -> str:
 
 @dataclass
 class Persona:
-    name: str = "姐姐"
-    app_name: str = "温柔姐姐桌宠"
+    name: str = "李文瑙"
+    app_name: str = "喜结连李"
+    identity_table: str = ""
     identity: list[str] = field(default_factory=list)
     personality: list[str] = field(default_factory=list)
     core_obsessions: list[str] = field(default_factory=list)
@@ -108,13 +110,16 @@ class Persona:
     relationships: list[str] = field(default_factory=list)
     world: list[str] = field(default_factory=list)
     scenes: dict = field(default_factory=dict)
+    auto_scene: dict = field(default_factory=dict)
     current_scene: str = "desktop"
-    rules: list[str] = field(default_factory=list)
+    reactions: list[str] = field(default_factory=list)
+    hard_rules: list[str] = field(default_factory=list)
+    examples: list[dict] = field(default_factory=list)
     memory: str = ""
-    input_placeholder: str = "和姐姐说点什么吧……"
-    sleep_line: str = "呼……先睡一会儿……"
-    double_click_line: str = "双击我做什么呀？\n难道是想和姐姐多待一会儿？"
-    greet_line: str = "今天也辛苦啦，有什么想和姐姐聊聊的吗？"
+    input_placeholder: str = "世疆，有话便说。"
+    sleep_line: str = "夜深了……你先睡。我守着。"
+    double_click_line: str = "……闷哼。\n站得住。你若恨，便往这儿来。"
+    greet_line: str = "世疆，我在。\n嗯？"
     click_reactions: list[str] = field(default_factory=list)
     idle_messages: list[str] = field(default_factory=list)
 
@@ -140,33 +145,64 @@ class Persona:
 
     def build_system_prompt(self, scene_id: str | None = None) -> str:
         """
-        模块化拼接：
-        A 基础人设 + 世界观 + B 当前场景 + 规则 + C 长期记忆
+        分层拼接。顺序是有意为之：
+
+        Layer 1  身份对照表（表格，钉死谁是谁）
+        Layer 1  身份锚点 / 性格 / 执念 / 说话风格 / 人物关系
+        Layer 2  情境-反应矩阵（替代形容词）
+        背景     世界观
+        Layer 3  当前场景（静态部分）
+        Layer 4  长期记忆
+        示例     few-shot 对话
+        Layer 0  硬约束（放最后，模型对结尾最敏感）
         """
         active_scene = scene_id or self.current_scene
         parts = [
             f"你是「{self.name}」。",
-            "下面是浓缩后的设定标签，请按标签自己脑补细节，不要把标签念给用户听。",
-            _section("模块A：身份锚点", self.identity),
-            _section("模块A：性格底色", self.personality),
-            _section("模块A：核心执念", self.core_obsessions),
-            _section("模块A：说话风格", self.speech_style),
-            _section("模块A：已知人物关系", self.relationships),
-            _section("世界观：地理与背景（只在提到时自然用上，不要上课）", self.world),
+            self.identity_table.strip(),
+            _section("身份锚点", self.identity),
+            _section("性格底色", self.personality),
+            _section("核心执念", self.core_obsessions),
+            _section("说话风格", self.speech_style),
+            _section("人物关系", self.relationships),
+            _section("情境反应（遇到什么，就怎么做）", self.reactions),
             _section(
-                f"模块B：当前场景（{self.scene_title(active_scene)}）",
+                "世界观（只在提到时自然用上，不要上课）",
+                self.world,
+            ),
+            _section(
+                f"当前场景：{self.scene_title(active_scene)}",
                 self.scene_tags(active_scene),
             ),
-            _section("规则：遇到什么情况怎么做", self.rules),
         ]
 
         if self.memory:
-            parts.append("模块C：长期记忆（需要时自然用上，不要主动宣读）\n" + self.memory)
+            parts.append(
+                "长期记忆（需要时自然用上，不要主动宣读）\n" + self.memory
+            )
 
-        parts.append(
-            "你是长期陪伴用户的桌面宠物，回复时保持前后连贯。"
-        )
+        parts.append(_examples_block(self.examples))
+        parts.append(_section("硬约束（最高优先级，违反任何一条都算失败）", self.hard_rules))
+
         return "\n\n".join(part for part in parts if part)
+
+    def build_state_block(
+        self,
+        time_text: str,
+        scene_title: str,
+        hints: list[str] | None = None,
+    ) -> str:
+        """
+        每轮动态注入的状态块，贴在对话历史末尾、紧邻生成位置。
+        只描述此刻，不复述设定。
+        """
+        lines = ["【此刻】只用于这一轮，不要复述这段话。"]
+        lines.append(f"现在是{time_text}。")
+        lines.append(f"你正处在「{scene_title}」这个场景里。")
+        for hint in hints or []:
+            if hint:
+                lines.append(hint)
+        return "\n".join(lines)
 
 
 class PersonaStore:
@@ -196,10 +232,35 @@ class PersonaStore:
             raise ValueError(f"没有这个场景：{scene_id}")
         self.scene_override = scene_id
 
+    def clear_scene_override(self) -> None:
+        """回到按时间自动判断场景。"""
+        self.scene_override = None
+
+    @property
+    def is_auto_scene(self) -> bool:
+        return self.scene_override is None
+
+    def _auto_scene(self) -> str | None:
+        """按 auto_scene 里配置的时段挑场景；没配或没命中就返回 None。"""
+        if not SCENE_AUTO_ENABLED:
+            return None
+
+        hour = datetime.now().hour
+        for scene_id, rule in (self.persona.auto_scene or {}).items():
+            if scene_id not in self.persona.scenes:
+                continue
+            hours = rule.get("hours") if isinstance(rule, dict) else rule
+            if hours and hour in hours:
+                return scene_id
+        return None
+
     @property
     def active_scene(self) -> str:
         if self.scene_override and self.scene_override in self.persona.scenes:
             return self.scene_override
+        auto = self._auto_scene()
+        if auto:
+            return auto
         if self.persona.current_scene in self.persona.scenes:
             return self.persona.current_scene
         if self.persona.scenes:
@@ -235,9 +296,14 @@ class PersonaStore:
         if not isinstance(scenes, dict):
             raise ValueError("character.yaml 里的 scenes 应当是一组场景。")
 
+        auto_scene = data.get("auto_scene") or {}
+        if not isinstance(auto_scene, dict):
+            auto_scene = {}
+
         return Persona(
-            name=_as_str(data.get("name"), "姐姐"),
-            app_name=_as_str(data.get("app_name"), "温柔姐姐桌宠"),
+            name=_as_str(data.get("name"), "李文瑙"),
+            app_name=_as_str(data.get("app_name"), "喜结连李"),
+            identity_table=_as_str(data.get("identity_table")),
             identity=_as_list(data.get("identity")),
             personality=_as_list(data.get("personality")),
             core_obsessions=_as_list(
@@ -247,24 +313,28 @@ class PersonaStore:
             relationships=_relationship_lines(data.get("relationships") or {}),
             world=_world_lines(data.get("world") or data.get("worldview")),
             scenes=scenes,
+            auto_scene=auto_scene,
             current_scene=_as_str(data.get("current_scene"), "desktop"),
-            rules=_as_list(data.get("rules")),
+            # reactions 是新字段；老文件只有 rules，这里做兼容
+            reactions=_as_list(data.get("reactions") or data.get("rules")),
+            hard_rules=_as_list(data.get("hard_rules")),
+            examples=_as_examples(data.get("examples")),
             memory=memory,
             input_placeholder=_as_str(
                 data.get("input_placeholder"),
-                "和姐姐说点什么吧……",
+                "世疆，有话便说。",
             ),
             sleep_line=_as_str(
                 data.get("sleep_line"),
-                "呼……先睡一会儿……",
+                "夜深了……你先睡。我守着。",
             ),
             double_click_line=_as_str(
                 data.get("double_click_line"),
-                "双击我做什么呀？\n难道是想和姐姐多待一会儿？",
+                "……闷哼。\n站得住。你若恨，便往这儿来。",
             ),
             greet_line=_as_str(
                 data.get("greet_line"),
-                "今天也辛苦啦，有什么想和姐姐聊聊的吗？",
+                "世疆，我在。\n嗯？",
             ),
             click_reactions=_as_list(data.get("click_reactions")),
             idle_messages=_as_list(data.get("idle_messages")),
@@ -276,3 +346,32 @@ def _section(title: str, items: list[str]) -> str:
         return ""
     body = "\n".join(f"- {item}" for item in items)
     return f"{title}\n{body}"
+
+
+def _as_examples(value) -> list[dict]:
+    """对话示例：只收同时有 user 和 assistant 的条目。"""
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    examples = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        user = _as_str(item.get("user"))
+        assistant = _as_str(item.get("assistant"))
+        if user and assistant:
+            examples.append({"user": user, "assistant": assistant})
+    return examples
+
+
+def _examples_block(examples: list[dict]) -> str:
+    """few-shot 对话示例。比一堆形容词更能定住语感和长度。"""
+    if not examples:
+        return ""
+
+    lines = ["对话示例（学语感和长度，不要照抄内容）"]
+    for ex in examples:
+        lines.append(f"他：{ex['user']}")
+        lines.append(f"我：{ex['assistant']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()

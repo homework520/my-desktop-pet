@@ -4,3 +4,8 @@ __pycache__/
 venv/
 *.log
 .env
+
+# 素材原书与 OCR 中间产物，不入库
+book/
+persona_v2/_tools/
+persona_v2/原文清洗.txt

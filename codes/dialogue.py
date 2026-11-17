@@ -46,6 +46,7 @@ class DialoguePlayer(QObject):
 
         self.is_typing = False
         self.can_next = False
+        self.is_active = False
 
         self.type_timer = QTimer(self)
         self.type_timer.timeout.connect(self._type_next_character)
@@ -71,8 +72,18 @@ class DialoguePlayer(QObject):
         # 整段放进同一个气泡，不再按句/按行翻页
         self.sentences = [text]
         self.current_index = 0
+        self.is_active = True
 
         self._start_current_sentence()
+
+    # --------------------------------------------------------
+    # 立即停止
+    # --------------------------------------------------------
+
+    def stop(self):
+        """立即结束当前对话并清空气泡。"""
+
+        self._fade_out()
 
     # --------------------------------------------------------
     # 点击对话框
@@ -198,6 +209,7 @@ class DialoguePlayer(QObject):
 
         self.can_next = False
         self.is_typing = False
+        self.is_active = False
 
         self.text_changed.emit("")
         self.speaking_changed.emit(False)

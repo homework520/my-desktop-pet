@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
-title 温柔姐姐桌宠 - 打包程序
+title 喜结连李桌宠 - 打包程序
 
 cd /d "%~dp0"
 
 echo ========================================
-echo       温柔姐姐桌宠 - 打包
+echo       喜结连李桌宠 - 打包
 echo ========================================
 echo.
 
@@ -28,7 +28,7 @@ echo 开始打包...
     --noconfirm ^
     --clean ^
     --windowed ^
-    --name "温柔姐姐桌宠" ^
+    --name "喜结连李" ^
     --add-data "pictures;./pictures" ^
     --add-data "persona;./persona" ^
     "codes/main.py"
@@ -48,7 +48,7 @@ echo 打包完成！
 echo ========================================
 echo.
 echo 输出目录：
-echo dist\温柔姐姐桌宠\
+echo dist\喜结连李\
 echo.
 echo 请把 .env 放到该目录。若要改人设，把 persona 文件夹也拷过去。
 echo.
